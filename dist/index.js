@@ -2345,24 +2345,24 @@ class GmailMultiInboxServer {
         const config = await this.loadConfig();
         const account = resolveWriteAccount(config, args.account);
         const client = await this.getClientForAccount(account);
-        const list = await client.listAttachments(args.email_id);
-        const settled = await Promise.allSettled(list.map(async (meta) => {
-            const { bytes, metadata } = await client.getAttachment(args.email_id, meta.id, meta.filename);
-            return saveAndExtract(bytes, metadata);
+        const settled = await Promise.allSettled((await client.fetchAllAttachments(args.email_id)).map((result) => {
+            if ('error' in result)
+                return Promise.reject(new Error(result.error));
+            return saveAndExtract(result.bytes, result.metadata);
         }));
         const attachments = [];
         const errors = [];
-        settled.forEach((result, index) => {
-            const originalId = list[index]?.id ?? '(unknown)';
+        settled.forEach((result) => {
             if (result.status === 'fulfilled') {
                 attachments.push(result.value);
             }
             else {
+                const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+                // Extract the attachment ID from the error message when available.
+                const idMatch = /^Attachment (\S+) /.exec(msg);
                 errors.push({
-                    attachment_id: originalId,
-                    error: result.reason instanceof Error
-                        ? result.reason.message
-                        : String(result.reason),
+                    attachment_id: idMatch?.[1] ?? '(unknown)',
+                    error: msg,
                 });
             }
         });

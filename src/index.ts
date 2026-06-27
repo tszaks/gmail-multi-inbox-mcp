@@ -3036,9 +3036,10 @@ class GmailMultiInboxServer {
     const client = await this.getClientForAccount(account);
 
     const settled = await Promise.allSettled(
-      (await client.fetchAllAttachments(args.email_id)).map(({ bytes, metadata }) =>
-        saveAndExtract(bytes, metadata),
-      ),
+      (await client.fetchAllAttachments(args.email_id)).map((result) => {
+        if ('error' in result) return Promise.reject(new Error(result.error));
+        return saveAndExtract(result.bytes, result.metadata);
+      }),
     );
 
     const attachments: AttachmentContent[] = [];

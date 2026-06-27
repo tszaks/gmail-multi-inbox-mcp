@@ -930,10 +930,13 @@ export class GmailAccountClient {
    * method fetches the message exactly once, extracts fresh attachment IDs from
    * that single response, and pipes them directly to `attachments.get` —
    * eliminating the stale-token window entirely.
+   *
+   * Per-attachment failures are returned as `{ error }` entries so callers can
+   * report partial success without aborting the entire fetch.
    */
   async fetchAllAttachments(
     messageId: string,
-  ): Promise<Array<{ bytes: Buffer; metadata: AttachmentMetadata }>> {
+  ): Promise<Array<{ bytes: Buffer; metadata: AttachmentMetadata } | { error: string; metadata: AttachmentMetadata }>> {
     if (!messageId || messageId.trim() === '') {
       throw new Error('message_id is required.');
     }
@@ -948,32 +951,36 @@ export class GmailAccountClient {
     const nonInline = allMeta.filter((a) => !a.isInline);
 
     return Promise.all(
-      nonInline.map(async (meta) => {
-        // Inline attachments have a synthetic `inline:<filename>` ID and their
-        // data is already embedded in the message payload — decode directly.
-        if (meta.id.startsWith('inline:')) {
-          const filename = meta.id.slice('inline:'.length);
-          const part = findAttachmentPartByFilename(messageResponse.data.payload, filename);
-          if (!part?.body?.data) {
-            throw new Error(`Inline attachment data missing for ${filename} on message ${messageId}.`);
+      nonInline.map(async (meta): Promise<{ bytes: Buffer; metadata: AttachmentMetadata } | { error: string; metadata: AttachmentMetadata }> => {
+        try {
+          // Inline attachments have a synthetic `inline:<filename>` ID and their
+          // data is already embedded in the message payload — decode directly.
+          if (meta.id.startsWith('inline:')) {
+            const filename = meta.id.slice('inline:'.length);
+            const part = findAttachmentPartByFilename(messageResponse.data.payload, filename);
+            if (!part?.body?.data) {
+              return { error: `Inline attachment data missing for ${filename} on message ${messageId}.`, metadata: meta };
+            }
+            return { bytes: decodeBase64UrlBuffer(part.body.data), metadata: meta };
           }
-          return { bytes: decodeBase64UrlBuffer(part.body.data), metadata: meta };
+
+          // Use the fresh attachment ID extracted from this same response.
+          // No re-fetch means no token-rotation window.
+          const attRes = await this.gmail.users.messages.attachments.get({
+            userId: 'me',
+            messageId,
+            id: meta.id,
+          });
+
+          const data = attRes.data.data;
+          if (!data) {
+            return { error: `Attachment ${meta.id} has no data payload on message ${messageId}.`, metadata: meta };
+          }
+
+          return { bytes: decodeBase64UrlBuffer(data), metadata: meta };
+        } catch (err) {
+          return { error: (err as Error).message ?? String(err), metadata: meta };
         }
-
-        // Use the fresh attachment ID extracted from this same response.
-        // No re-fetch means no token-rotation window.
-        const attRes = await this.gmail.users.messages.attachments.get({
-          userId: 'me',
-          messageId,
-          id: meta.id,
-        });
-
-        const data = attRes.data.data;
-        if (!data) {
-          throw new Error(`Attachment ${meta.id} has no data payload on message ${messageId}.`);
-        }
-
-        return { bytes: decodeBase64UrlBuffer(data), metadata: meta };
       }),
     );
   }
