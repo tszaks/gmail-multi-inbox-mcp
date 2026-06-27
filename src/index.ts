@@ -3035,8 +3035,12 @@ class GmailMultiInboxServer {
     const account = resolveWriteAccount(config, args.account);
     const client = await this.getClientForAccount(account);
 
+    const fetchResults = await client.fetchAllAttachments(args.email_id);
+
+    // Pair each fetch result with its metadata so the settled loop always has
+    // the attachment ID, even when saveAndExtract itself rejects.
     const settled = await Promise.allSettled(
-      (await client.fetchAllAttachments(args.email_id)).map((result) => {
+      fetchResults.map((result) => {
         if ('error' in result) return Promise.reject(new Error(result.error));
         return saveAndExtract(result.bytes, result.metadata);
       }),
@@ -3045,18 +3049,14 @@ class GmailMultiInboxServer {
     const attachments: AttachmentContent[] = [];
     const errors: Array<{ attachment_id: string; error: string }> = [];
 
-    settled.forEach((result) => {
+    settled.forEach((result, index) => {
+      const attachmentId = fetchResults[index]?.metadata.id ?? '(unknown)';
       if (result.status === 'fulfilled') {
         attachments.push(result.value);
       } else {
         const msg =
           result.reason instanceof Error ? result.reason.message : String(result.reason);
-        // Extract the attachment ID from the error message when available.
-        const idMatch = /^Attachment (\S+) /.exec(msg);
-        errors.push({
-          attachment_id: idMatch?.[1] ?? '(unknown)',
-          error: msg,
-        });
+        errors.push({ attachment_id: attachmentId, error: msg });
       }
     });
 
