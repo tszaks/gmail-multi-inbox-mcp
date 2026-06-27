@@ -3035,29 +3035,26 @@ class GmailMultiInboxServer {
     const account = resolveWriteAccount(config, args.account);
     const client = await this.getClientForAccount(account);
 
-    const list: AttachmentMetadata[] = await client.listAttachments(args.email_id);
-
     const settled = await Promise.allSettled(
-      list.map(async (meta) => {
-        const { bytes, metadata } = await client.getAttachment(args.email_id, meta.id, meta.filename);
-        return saveAndExtract(bytes, metadata);
-      }),
+      (await client.fetchAllAttachments(args.email_id)).map(({ bytes, metadata }) =>
+        saveAndExtract(bytes, metadata),
+      ),
     );
 
     const attachments: AttachmentContent[] = [];
     const errors: Array<{ attachment_id: string; error: string }> = [];
 
-    settled.forEach((result, index) => {
-      const originalId = list[index]?.id ?? '(unknown)';
+    settled.forEach((result) => {
       if (result.status === 'fulfilled') {
         attachments.push(result.value);
       } else {
+        const msg =
+          result.reason instanceof Error ? result.reason.message : String(result.reason);
+        // Extract the attachment ID from the error message when available.
+        const idMatch = /^Attachment (\S+) /.exec(msg);
         errors.push({
-          attachment_id: originalId,
-          error:
-            result.reason instanceof Error
-              ? result.reason.message
-              : String(result.reason),
+          attachment_id: idMatch?.[1] ?? '(unknown)',
+          error: msg,
         });
       }
     });
